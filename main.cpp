@@ -1,5 +1,8 @@
 #include <iostream>
+#include <utility>
+#include <set>
 #include <map>
+#include <initializer_list>
 
 #include <SDL2/SDL.h>
 #include <SDL2_ttf/SDL_ttf.h>
@@ -18,7 +21,7 @@ SDL_Window* gWindow = null;
 SDL_Renderer* gRenderer = null;
 std::map<std::string, SDL_Texture*> gTextures;
 
-void evaluateDirection(const int inputs[2], const int lastInputs[2], int& rotation);
+void evaluateDirection(const int inputs[2], const int lastInputs[2], int lastNonZeroInputs[2], int& rotation);
 
 class Entity {
 protected:
@@ -39,22 +42,75 @@ class Player : public Entity {
 private: // Constants
 	const int MAX_DASH_FRAMES = 7;
 	const int NORMAL_SPEED = 7;
-	const int DASH_SPEED = 25, DASH_COOLDOWN = 3000;
+	const int DASH_SPEED = 25, DASH_COOLDOWN = 500;
 	const int SIZE = 60;
 private:
 	int rotationAngle;
 	int lastInputs[2] = { 0, 0 };
+	int lastNonZeroInputs[2] = { -1, 0};
 
-	bool dashMode;
+public: bool dashMode;
 	int dashFrames = 0;
+	bool dashPossible;
 	Uint32 timeSinceLastDash = -5000;
 public:
 	Player();
 	Player(int x, int y);
 	void move(const Uint8*& keyStates);
+	void dash(Uint8 spaceState);
 	void render(SDL_Renderer*& renderer) override;
+
+	[[nodiscard]] SDL_Rect getRect() const { return (SDL_Rect){ this->xPos, this->yPos, this->width, this->width}; }
+	void setPosition(const int position[2]) { this->xPos = position[0]; this->yPos = position[1]; }
+	int* getLastMovement() { return this->lastNonZeroInputs; }
+	int getVelocity() { return this->vel; }
 };
 
+struct WallRect;
+
+class Walls {
+public:
+	enum Directions {
+		UP, DOWN, LEFT, RIGHT
+	};
+	const int CORNER_WALL_SIZE = 200;
+	const int WALL_WIDTH = 50;
+private:
+	std::set<WallRect> solidWalls;
+public :
+	explicit Walls(std::set<Directions> walls);
+	~Walls() = default;
+	void render(SDL_Renderer*& renderer);
+	void manageCollision(Player& ply);
+};
+
+struct WallRect {
+	WallRect(std::initializer_list<int> values) {
+		if (values.size() != 5) {
+			std::cout << "The initializer list for the WallRect didn't get the right amount of parameters" << std::endl;
+			return;
+		}
+		auto pos = values.begin();
+		r.x = *pos;
+		pos++;
+		r.y = *pos;
+		pos++;
+		r.w = *pos;
+		pos++;
+		r.h = *pos;
+		pos++;
+		id = *pos;
+	}
+
+	SDL_Rect r = {0, 0, 0, 0};
+	int id;
+
+	bool operator < (const WallRect& rect2) const {
+		return this->id < rect2.id;
+	}
+};
+
+void setBackPlayer(Player& ply, const WallRect& rect);
 
 int main() {
 	if (!init()) {
@@ -63,8 +119,11 @@ int main() {
 	}
 	loadMedia();
 
-	Player ply(100, 100);
+	Player ply(SCREEN_WIDTH/2, SCREEN_HEIGHT/2);
 	ply.loadSprite(gRenderer, "../Sprites/Ladybug.png");
+
+	Walls wall((std::set<Walls::Directions>){Walls::Directions::UP, Walls::Directions::DOWN,
+										  Walls::Directions::LEFT, Walls::Directions::RIGHT});
 
 	bool running = true;
 	SDL_Event e;
@@ -76,7 +135,9 @@ int main() {
 			}
 		}
 		const Uint8* currentKeyStates = SDL_GetKeyboardState(null);
+
 		ply.move(currentKeyStates);
+		wall.manageCollision(ply);
 
 		SDL_SetRenderDrawColor(gRenderer, 0xFF, 0xFF, 0xFF, 0xFF);
 		SDL_RenderClear(gRenderer);
@@ -84,6 +145,7 @@ int main() {
 		SDL_RenderCopy(gRenderer, gTextures.find("BG1")->second, null, null);
 
 		ply.render(gRenderer);
+		wall.render(gRenderer);
 
 		SDL_RenderPresent(gRenderer);
 	}
@@ -128,13 +190,16 @@ void Entity::render(SDL_Renderer*& renderer) {
 }
 
 void Player::render(SDL_Renderer*& renderer) {
-	SDL_Rect rect = {xPos, yPos, width, height};
+	SDL_Rect dstRect = { xPos, yPos, width, height };
+	/// Change this if the player gets another sprite size
+	SDL_Rect srcRect = { 0, 0, 40, 40 };
+	srcRect.x = dashPossible ? 0 : 41;
 
 	if (this->sprite == null) {
 		SDL_SetRenderDrawColor(renderer, 0xFF, 0, 0, 0xFF);
-		SDL_RenderFillRect(renderer, &rect);
+		SDL_RenderFillRect(renderer, &dstRect);
 	} else {
-		SDL_RenderCopyEx(renderer, this->sprite, null, &rect, this->rotationAngle, null, SDL_FLIP_NONE);
+		SDL_RenderCopyEx(renderer, this->sprite, &srcRect, &dstRect, this->rotationAngle, null, SDL_FLIP_NONE);
 	}
 }
 
@@ -148,6 +213,7 @@ Player::Player() {
 
 	this->rotationAngle = 0;
 	this->dashMode = false;
+	this->dashPossible = true;
 }
 
 Player::Player(int x, int y) {
@@ -155,6 +221,7 @@ Player::Player(int x, int y) {
 	this->yPos = y;
 	this->rotationAngle = 0;
 	this->dashMode = false;
+	this->dashPossible = true;
 
 	this->sprite = null;
 	this->width = SIZE;
@@ -178,27 +245,7 @@ void Entity::loadSprite(SDL_Renderer*& renderer, const std::string& path) {
 }
 
 void Player::move(const Uint8*& keyStates) {
-	std::cout << (SDL_GetTicks() - timeSinceLastDash)/1000 << std::endl;
-	if (keyStates[SDL_SCANCODE_SPACE] && SDL_GetTicks() - timeSinceLastDash >= DASH_COOLDOWN) {
-		dashMode = true;
-		vel = DASH_SPEED;
-	}
-	if (dashMode) {
-		dashFrames++;
-		std::cout << "Frame " << dashFrames << std::endl;
-		if (lastInputs[0] == 0 && lastInputs[1] == 0) {
-			lastInputs[0] = -1;
-		}
-		this->xPos += lastInputs[1]*vel;
-		this->yPos += lastInputs[0]*vel;
-
-		if (dashFrames > MAX_DASH_FRAMES) {
-			dashMode = false;
-			vel = NORMAL_SPEED;
-			dashFrames = 0;
-			timeSinceLastDash = SDL_GetTicks();
-		}
-	}
+	this->dash(keyStates[SDL_SCANCODE_SPACE]);
 
 	int inputs[2] = { 0, 0 };
 
@@ -235,18 +282,112 @@ void Player::move(const Uint8*& keyStates) {
 	}
 
 	if (!dashMode) {
-		evaluateDirection(inputs, lastInputs, this->rotationAngle);
+		evaluateDirection(inputs, lastInputs, this->lastNonZeroInputs, this->rotationAngle);
 
 		lastInputs[0] = inputs[0];
 		lastInputs[1] = inputs[1];
 	}
 }
 
-void evaluateDirection(const int inputs[2], const int lastInputs[2], int& rotation) {
-	if (!( inputs[0] == lastInputs[0] && inputs[1] == lastInputs[1] )) {
+void Player::dash(Uint8 spaceState) {
+	if (dashFrames > MAX_DASH_FRAMES) {
+		dashMode = false;
+		vel = NORMAL_SPEED;
+		dashFrames = 0;
+	}
+	if (SDL_GetTicks() - timeSinceLastDash >= DASH_COOLDOWN) {
+		this->dashPossible = true;
+	}
+	if (spaceState != false && dashPossible) {  // Initialiize dash values
+		dashMode = true;
+		this->dashPossible = false;
+		timeSinceLastDash = SDL_GetTicks();
+		vel = DASH_SPEED;
+	}
+	if (dashMode) {
+		dashFrames++;
+		this->xPos += lastNonZeroInputs[1]*vel;
+		this->yPos += lastNonZeroInputs[0]*vel;
+	}
+}
+
+Walls::Walls(std::set<Directions> walls) {
+	this->solidWalls.insert((WallRect){0, 0,
+									CORNER_WALL_SIZE, CORNER_WALL_SIZE, 0}); // Upper left corner
+	this->solidWalls.insert((WallRect){SCREEN_WIDTH-CORNER_WALL_SIZE, 0,
+									CORNER_WALL_SIZE, CORNER_WALL_SIZE, 1}); // Upper right corner
+	this->solidWalls.insert((WallRect){0, SCREEN_HEIGHT-CORNER_WALL_SIZE,
+									CORNER_WALL_SIZE, CORNER_WALL_SIZE, 2}); // Lower left corner
+	this->solidWalls.insert((WallRect){SCREEN_WIDTH-CORNER_WALL_SIZE, SCREEN_HEIGHT-CORNER_WALL_SIZE,
+									CORNER_WALL_SIZE, CORNER_WALL_SIZE, 3}); // Lower right corner
+
+	if (walls.find(Directions::UP) != walls.end()) {
+		this->solidWalls.insert((WallRect){CORNER_WALL_SIZE, 0,
+									 SCREEN_WIDTH-2*CORNER_WALL_SIZE, WALL_WIDTH, 4});
+	}
+	if (walls.find(Directions::DOWN) != walls.end()) {
+		this->solidWalls.insert((WallRect){CORNER_WALL_SIZE, SCREEN_HEIGHT-WALL_WIDTH,
+									 SCREEN_WIDTH-2*CORNER_WALL_SIZE, WALL_WIDTH, 5});
+	}
+	if (walls.find(Directions::LEFT) != walls.end()) {
+		this->solidWalls.insert((WallRect){0, CORNER_WALL_SIZE,
+									 WALL_WIDTH, SCREEN_HEIGHT-2*CORNER_WALL_SIZE, 6});
+	}
+	if (walls.find(Directions::RIGHT) != walls.end()) {
+		this->solidWalls.insert((WallRect){SCREEN_WIDTH-WALL_WIDTH, CORNER_WALL_SIZE,
+		                                   WALL_WIDTH, SCREEN_HEIGHT-2*CORNER_WALL_SIZE, 7});
+	}
+}
+
+void Walls::render(SDL_Renderer*& renderer) {
+	SDL_SetRenderDrawColor(renderer, 0xFF, 0, 0, 0xFF);
+	for (auto& rect : this->solidWalls) {
+		SDL_RenderFillRect(renderer, &(rect.r));
+	}
+}
+
+void Walls::manageCollision(Player& ply) {
+	bool changed = true;
+	int vertiMovement = ply.getLastMovement()[0], horiMovement = ply.getLastMovement()[1];
+	int plyLeft, plyRight, plyTop, plyBottom;
+
+	for (auto& wall : this->solidWalls) {
+		if (changed) {
+			plyLeft = ply.getRect().x, plyRight = ply.getRect().x + ply.getRect().w;
+			plyTop = ply.getRect().y, plyBottom = ply.getRect().y + ply.getRect().h;
+		}
+		int wallLeft = wall.r.x, wallRight = wall.r.x + wall.r.w;
+		int wallTop = wall.r.y, wallBottom = wall.r.y + wall.r.h;
+
+		if (plyBottom <= wallTop || plyTop >= wallBottom ||
+				plyRight <= wallLeft || plyLeft >= wallRight) {
+			changed = false;
+		} else {
+			changed = true;
+
+			int tempArr[2] = { ply.getRect().x, ply.getRect().y };
+			if (plyLeft < wallRight && plyRight > wallRight) {
+				tempArr[0] = wall.r.x + wall.r.w;
+			}
+			if (plyLeft < wallLeft && plyRight > wallLeft) {
+				tempArr[0] = wall.r.x - ply.getRect().w;
+			}
+			if (plyTop < wallBottom && plyBottom > wallBottom) {
+				tempArr[1] = wall.r.y + wall.r.h;
+			}
+			if (plyTop < wallTop && plyBottom > wallTop) {
+				tempArr[1] = wall.r.y - ply.getRect().h;
+			}
+			ply.setPosition(tempArr);
+		}
+	}
+}
+
+void evaluateDirection(const int inputs[2], const int lastInputs[2], int lastNonZeroInputs[2], int& rotation) {
+	if (!( inputs[0] == lastInputs[0] && inputs[1] == lastInputs[1] )) { // Input hasn't changed
 		return;
 	}
-	if (inputs[0] == 0 && inputs[1] == 0) {
+	if (inputs[0] == 0 && inputs[1] == 0) { // No input
 		return;
 	}
 
@@ -274,10 +415,14 @@ void evaluateDirection(const int inputs[2], const int lastInputs[2], int& rotati
 			rotation = 315;
 		}
 	}
+
+	lastNonZeroInputs[0] = inputs[0];
+	lastNonZeroInputs[1] = inputs[1];
 }
 
 void loadMedia() {
 	std::map<std::string, std::string> paths;
+	// Insert paths and names for all non-entity based sprites
 	paths.insert(std::pair<std::string, std::string>("../Sprites/Background1.png", "BG1"));
 
 	for (auto& value : paths) {
