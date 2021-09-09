@@ -1,0 +1,7 @@
+- Replace bullet sprite with a more visible one
+- Create Wall Sprite
+- Room transitions
+- Randomly generated rooms
+- Consistent Dungeon Layout (Rooms stay the same; Paths make sense (Same rooms, even through different entrances))
+- Tweak bullet and dash speed
+- Tweak bullet and dash cooldown
