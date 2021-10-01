@@ -4,6 +4,7 @@
 #include <map>
 #include <vector>
 #include <initializer_list>
+#include <ctime>
 
 #include <SDL2/SDL.h>
 #include <SDL2_ttf/SDL_ttf.h>
@@ -22,22 +23,25 @@ SDL_Window* gWindow = null;
 SDL_Renderer* gRenderer = null;
 std::map<std::string, SDL_Texture*> gTextures;
 
+enum Directions {
+	UP, RIGHT, DOWN, LEFT, NONE
+};
+
 void evaluateDirection(const int inputs[2], const int lastInputs[2], int lastNonZeroInputs[2], int& rotation);
 
 class Bullet {
 public:
-	enum Direction { UP, DOWN, LEFT, RIGHT };
 	static int getWidth();
 	static int getHeight();
 private:
-	Direction dir;
+	Directions dir;
 	int x, y;
 	int rotation;
 	int xVel, yVel;
 
 	int GENERAL_VEL = 30;
 public:
-	Bullet(Direction d, int x, int y);
+	Bullet(Directions d, int x, int y);
 	~Bullet() = default;
 
 	bool renderAndMove(SDL_Renderer*& renderer, SDL_Texture*& texture);
@@ -85,22 +89,20 @@ public: bool dashMode;
 public:
 	Player();
 	Player(int x, int y, SDL_Renderer** renderer);
-	void move(const Uint8*& keyStates);
+	Directions move(const Uint8*& keyStates);
 	void dash(Uint8 spaceState);
 	bool shooting(const Uint8*& keyStates);
 	void render();
 
 	[[nodiscard]] SDL_Rect getRect() const { return (SDL_Rect){ this->xPos, this->yPos, this->width, this->width}; }
 	void setPosition(const int position[2]) { this->xPos = position[0]; this->yPos = position[1]; }
+	void setPosition(const int& a, const int& b) { this->xPos = a; this->yPos = b; }
 };
 
 struct WallRect;
 
 class Walls {
 public:
-	enum Directions {
-		UP, DOWN, LEFT, RIGHT
-	};
 	const int CORNER_WALL_SIZE = 200;
 	const int WALL_WIDTH = 50;
 private:
@@ -108,8 +110,9 @@ private:
 public :
 	explicit Walls(std::set<Directions> walls);
 	~Walls() = default;
-	void render(SDL_Renderer*& renderer);
+	void render(SDL_Renderer*& renderer, SDL_Texture*& texture);
 	void manageCollision(Player& ply);
+	void setWalls(std::set<Directions>& walls);
 };
 
 struct WallRect {
@@ -138,7 +141,10 @@ struct WallRect {
 	}
 };
 
+void transitionRoom(Player& ply, Walls& w, const Directions& dir);
+
 int main() {
+	srand((unsigned int)time(null));
 	if (!init()) {
 		close();
 		return -69;
@@ -148,8 +154,8 @@ int main() {
 	Player ply(SCREEN_WIDTH/2, SCREEN_HEIGHT/2, &gRenderer);
 	ply.loadSprite(gRenderer, "../Sprites/Ladybug.png");
 
-	Walls wall((std::set<Walls::Directions>){ Walls::Directions::DOWN,
-										  Walls::Directions::LEFT });
+	Walls wall((std::set<Directions>){ Directions::DOWN,
+										  Directions::LEFT });
 
 	bool running = true;
 	SDL_Event e;
@@ -162,7 +168,11 @@ int main() {
 		}
 		const Uint8* currentKeyStates = SDL_GetKeyboardState(null);
 
-		ply.move(currentKeyStates);
+		Directions transition = ply.move(currentKeyStates);;
+		if (transition != Directions::NONE) {
+			transitionRoom(ply, wall, transition);
+		}
+
 		wall.manageCollision(ply);
 
 		SDL_SetRenderDrawColor(gRenderer, 0xFF, 0xFF, 0xFF, 0xFF);
@@ -171,13 +181,47 @@ int main() {
 		SDL_RenderCopy(gRenderer, gTextures.find("BG1")->second, null, null);
 
 		ply.render();
-		wall.render(gRenderer);
+		wall.render(gRenderer, gTextures.find("Wall")->second);
 
 		SDL_RenderPresent(gRenderer);
 	}
 	
 	close();
 	return 0;
+}
+
+void transitionRoom(Player& ply, Walls& w, const Directions& dir) {
+	std::set<Directions> wallPool;
+	switch (dir) {
+		case UP:
+			ply.setPosition(ply.getRect().x, SCREEN_HEIGHT-ply.getRect().h-20);
+			wallPool.insert({Directions::LEFT, Directions::UP, Directions::RIGHT});
+			break;
+		case DOWN:
+			ply.setPosition(ply.getRect().x, 20);
+			wallPool.insert({Directions::LEFT, Directions::DOWN, Directions::RIGHT});
+			break;
+		case RIGHT:
+			ply.setPosition(20, ply.getRect().y);
+			wallPool.insert({Directions::UP, Directions::RIGHT, Directions::DOWN});
+			break;
+		case LEFT:
+			ply.setPosition(SCREEN_WIDTH-ply.getRect().w-20, ply.getRect().y);
+			wallPool.insert({Directions::UP, Directions::LEFT, Directions::DOWN});
+			break;
+		case NONE:
+			break;
+	}
+
+	for (auto i = wallPool.begin(); i != wallPool.end(); ) {
+		if (rand() % 2 == 0) {
+			i = wallPool.erase(i);
+			continue;
+		}
+		i++;
+	}
+
+	w.setWalls(wallPool);
 }
 
 Entity::Entity() {
@@ -281,7 +325,8 @@ void Entity::loadSprite(SDL_Renderer*& renderer, const std::string& path) {
 	SDL_FreeSurface(tempSurface);
 }
 
-void Player::move(const Uint8*& keyStates) {
+Directions Player::move(const Uint8*& keyStates) {
+	Directions dir = Directions::NONE;
 	this->dash(keyStates[SDL_SCANCODE_SPACE]);
 
 	int inputs[2] = { 0, 0 };
@@ -292,6 +337,7 @@ void Player::move(const Uint8*& keyStates) {
 	}
 	if (xPos + width > SCREEN_WIDTH) {
 		xPos = SCREEN_WIDTH - width;
+		dir = Directions::RIGHT;
 	}
 	
 	if (keyStates[SDL_SCANCODE_A] && !dashMode) {
@@ -300,6 +346,7 @@ void Player::move(const Uint8*& keyStates) {
 	}
 	if (xPos < 0) {
 		xPos = 0;
+		dir = Directions::LEFT;
 	}
 	
 	if (keyStates[SDL_SCANCODE_S] && !dashMode) {
@@ -308,6 +355,7 @@ void Player::move(const Uint8*& keyStates) {
 	}
 	if (yPos + height > SCREEN_HEIGHT) {
 		yPos = SCREEN_HEIGHT - height;
+		dir = Directions::DOWN;
 	}
 	
 	if (keyStates[SDL_SCANCODE_W] && !dashMode){
@@ -316,6 +364,7 @@ void Player::move(const Uint8*& keyStates) {
 	}
 	if (yPos < 0) {
 		yPos = 0;
+		dir = Directions::UP;
 	}
 
 	if (SDL_GetTicks() - lastShot > SHOT_COOLDOWN) {
@@ -330,6 +379,8 @@ void Player::move(const Uint8*& keyStates) {
 		lastInputs[0] = inputs[0];
 		lastInputs[1] = inputs[1];
 	}
+
+	return dir;
 }
 
 void Player::dash(Uint8 spaceState) {
@@ -357,19 +408,19 @@ void Player::dash(Uint8 spaceState) {
 bool Player::shooting(const Uint8*& keyStates) {
 	bool res = false;
 	if (keyStates[SDL_SCANCODE_UP]) {
-		Bullet b = Bullet(Bullet::Direction::UP, this->xPos+SIZE/2-Bullet::getWidth()/2, this->yPos);
+		Bullet b = Bullet(Directions::UP, this->xPos+SIZE/2-Bullet::getWidth()/2, this->yPos);
 		this->shots.emplace_back(b);
 		res = true;
 	} else if (keyStates[SDL_SCANCODE_DOWN]) {
-		Bullet b = Bullet(Bullet::Direction::DOWN, this->xPos+SIZE/2-Bullet::getWidth()/2, this->yPos+SIZE-Bullet::getHeight());
+		Bullet b = Bullet(Directions::DOWN, this->xPos+SIZE/2-Bullet::getWidth()/2, this->yPos+SIZE-Bullet::getHeight());
 		this->shots.emplace_back(b);
 		res = true;
 	} else if (keyStates[SDL_SCANCODE_LEFT]) {
-		Bullet b = Bullet(Bullet::Direction::LEFT, this->xPos-Bullet::getWidth()/2, this->yPos+SIZE/2-Bullet::getHeight()/2);
+		Bullet b = Bullet(Directions::LEFT, this->xPos-Bullet::getWidth()/2, this->yPos+SIZE/2-Bullet::getHeight()/2);
 		this->shots.emplace_back(b);
 		res = true;
 	}else if (keyStates[SDL_SCANCODE_RIGHT]) {
-		Bullet b = Bullet(Bullet::Direction::RIGHT, this->xPos+SIZE-Bullet::getWidth()/2, this->yPos+SIZE/2-Bullet::getHeight()/2);
+		Bullet b = Bullet(Directions::RIGHT, this->xPos+SIZE-Bullet::getWidth()/2, this->yPos+SIZE/2-Bullet::getHeight()/2);
 		this->shots.emplace_back(b);
 		res = true;
 	}
@@ -378,26 +429,32 @@ bool Player::shooting(const Uint8*& keyStates) {
 }
 
 Walls::Walls(std::set<Directions> walls) {
+	this->setWalls(walls);
+}
+
+void Walls::setWalls(std::set<Directions>& walls) {
+	this->solidWalls.clear();
+
 	this->solidWalls.insert((WallRect){0, 0,
-									CORNER_WALL_SIZE, CORNER_WALL_SIZE, 0}); // Upper left corner
+	                                   CORNER_WALL_SIZE, CORNER_WALL_SIZE, 0}); // Upper left corner
 	this->solidWalls.insert((WallRect){SCREEN_WIDTH-CORNER_WALL_SIZE, 0,
-									CORNER_WALL_SIZE, CORNER_WALL_SIZE, 1}); // Upper right corner
+	                                   CORNER_WALL_SIZE, CORNER_WALL_SIZE, 1}); // Upper right corner
 	this->solidWalls.insert((WallRect){0, SCREEN_HEIGHT-CORNER_WALL_SIZE,
-									CORNER_WALL_SIZE, CORNER_WALL_SIZE, 2}); // Lower left corner
+	                                   CORNER_WALL_SIZE, CORNER_WALL_SIZE, 2}); // Lower left corner
 	this->solidWalls.insert((WallRect){SCREEN_WIDTH-CORNER_WALL_SIZE, SCREEN_HEIGHT-CORNER_WALL_SIZE,
-									CORNER_WALL_SIZE, CORNER_WALL_SIZE, 3}); // Lower right corner
+	                                   CORNER_WALL_SIZE, CORNER_WALL_SIZE, 3}); // Lower right corner
 
 	if (walls.find(Directions::UP) != walls.end()) {
 		this->solidWalls.insert((WallRect){CORNER_WALL_SIZE, 0,
-									 SCREEN_WIDTH-2*CORNER_WALL_SIZE, WALL_WIDTH, 4});
+		                                   SCREEN_WIDTH-2*CORNER_WALL_SIZE, WALL_WIDTH, 4});
 	}
 	if (walls.find(Directions::DOWN) != walls.end()) {
 		this->solidWalls.insert((WallRect){CORNER_WALL_SIZE, SCREEN_HEIGHT-WALL_WIDTH,
-									 SCREEN_WIDTH-2*CORNER_WALL_SIZE, WALL_WIDTH, 5});
+		                                   SCREEN_WIDTH-2*CORNER_WALL_SIZE, WALL_WIDTH, 5});
 	}
 	if (walls.find(Directions::LEFT) != walls.end()) {
 		this->solidWalls.insert((WallRect){0, CORNER_WALL_SIZE,
-									 WALL_WIDTH, SCREEN_HEIGHT-2*CORNER_WALL_SIZE, 6});
+		                                   WALL_WIDTH, SCREEN_HEIGHT-2*CORNER_WALL_SIZE, 6});
 	}
 	if (walls.find(Directions::RIGHT) != walls.end()) {
 		this->solidWalls.insert((WallRect){SCREEN_WIDTH-WALL_WIDTH, CORNER_WALL_SIZE,
@@ -405,10 +462,10 @@ Walls::Walls(std::set<Directions> walls) {
 	}
 }
 
-void Walls::render(SDL_Renderer*& renderer) {
+void Walls::render(SDL_Renderer*& renderer, SDL_Texture*& texture) {
 	SDL_SetRenderDrawColor(renderer, 0xFF, 0, 0, 0xFF);
 	for (auto& rect : this->solidWalls) {
-		SDL_RenderFillRect(renderer, &(rect.r));
+		SDL_RenderCopy(renderer, texture, null, &(rect.r));
 	}
 }
 
@@ -456,7 +513,7 @@ int Bullet::getHeight() {
 	return 15;
 }
 
-Bullet::Bullet(Direction d, int xPos, int yPos) {
+Bullet::Bullet(Directions d, int xPos, int yPos) {
 	this->dir = d;
 	this->x = xPos;
 	this->y = yPos;
@@ -481,6 +538,8 @@ Bullet::Bullet(Direction d, int xPos, int yPos) {
 			xVel = GENERAL_VEL;
 			yVel = 0;
 			rotation = 180;
+			break;
+		case NONE:
 			break;
 	}
 }
@@ -537,6 +596,7 @@ void loadMedia() {
 	// Insert paths and names for all non-entity based sprites
 	paths.insert(std::pair<std::string, std::string>("../Sprites/Background1.png", "BG1"));
 	paths.insert(std::pair<std::string, std::string>("../Sprites/Bullet.png", "Bullet"));
+	paths.insert(std::pair<std::string, std::string>("../Sprites/Wall.png", "Wall"));
 
 	for (auto& value : paths) {
 		SDL_Surface* tempSurface = IMG_Load(value.first.c_str());
