@@ -49,7 +49,8 @@ private:
 	int lastInputs[2] = { 0, 0 };
 	int lastNonZeroInputs[2] = { -1, 0};
 
-public: bool dashMode;
+public: 
+	bool dashMode;
 	int dashFrames = 0;
 	bool dashPossible;
 	Uint32 timeSinceLastDash = -5000;
