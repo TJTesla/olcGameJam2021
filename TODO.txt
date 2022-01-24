@@ -1,0 +1,5 @@
+- Write Enemy (With "AI")
+- Create Enemy Sprite
+- Consistent Dungeon Layout (Rooms stay the same; Paths make sense (Same rooms, even through different entrances))
+- Tweak bullet and dash speed
+- Tweak bullet and dash cooldown
